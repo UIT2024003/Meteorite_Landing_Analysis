@@ -10,7 +10,7 @@ import os
 import joblib
 
 # -----------------------------
-# UI THEME (NEW)
+# UI THEME
 # -----------------------------
 st.markdown("""
 <style>
@@ -55,8 +55,7 @@ ARIMA_PATH = os.path.join(BASE_DIR, "backend", "models", "arima_model.pkl")
 # -----------------------------
 @st.cache_data
 def load_data():
-    df = pd.read_csv(DATA_PATH)
-    return df
+    return pd.read_csv(DATA_PATH)
 
 df = load_data()
 
@@ -79,150 +78,188 @@ if menu == "📊 EDA":
 
     st.header("Exploratory Data Analysis")
 
-    # ---------------- CLEANING ----------------
-    df["year"] = pd.to_numeric(df["year"], errors="coerce")
-    df["mass_tonnes"] = pd.to_numeric(df["mass_tonnes"], errors="coerce")
-    df = df.dropna(subset=["year", "mass_tonnes"])
-    df["year"] = df["year"].astype(int)
-    df = df[df["mass_tonnes"] > 0]
+    # -----------------------------
+    # CLEAN DATA (SAFE)
+    # -----------------------------
+    df_eda = df.copy()
+
+    df_eda["year"] = pd.to_numeric(df_eda["year"], errors="coerce")
+    df_eda["mass_tonnes"] = pd.to_numeric(df_eda["mass_tonnes"], errors="coerce")
+
+    # FIX lat/lon
+    if "lat" in df_eda.columns:
+        df_eda["lat"] = pd.to_numeric(df_eda["lat"], errors="coerce")
+    else:
+        df_eda["lat"] = np.nan
+
+    if "lon" in df_eda.columns:
+        df_eda["lon"] = pd.to_numeric(df_eda["lon"], errors="coerce")
+    else:
+        df_eda["lon"] = np.nan
+
+    df_eda = df_eda.dropna(subset=["year", "mass_tonnes"])
+
+    df_eda = df_eda[
+        (df_eda["year"] > 1800) &
+        (df_eda["year"] < 2025)
+    ]
+
+    # ⚠️ IMPORTANT FIX (no over-filtering)
+    df_eda = df_eda[df_eda["mass_tonnes"] > 0]
+
+    df_eda["class"] = df_eda["class"].fillna("Unknown")
+
+    if df_eda.empty:
+        st.error("No data available after cleaning")
+        st.stop()
 
     st.subheader("Dataset Preview")
-    st.dataframe(df.head())
+    st.dataframe(df_eda.head())
 
-    # ---------------- MASS ----------------
+    # =====================================================
+    # 1. MASS DISTRIBUTION
+    # =====================================================
     st.subheader("Mass Distribution (Log Scale)")
-    fig1, ax1 = plt.subplots()
-    ax1.hist(np.log10(df["mass_tonnes"] + 1), bins=30)
-    st.pyplot(fig1)
 
-    # ---------------- YEAR TREND ----------------
-    st.subheader("Meteorite Trend Over Years")
-    yearly = df.groupby("year").size().rolling(3, min_periods=1).mean()
+    fig, ax = plt.subplots()
 
-    fig2, ax2 = plt.subplots()
-    ax2.plot(yearly.index, yearly.values)
-    st.pyplot(fig2)
+    mass_log = np.log10(df_eda["mass_tonnes"] + 1e-9)
 
-    # ---------------- MASS VS YEAR ----------------
+    ax.hist(mass_log, bins=50)
+
+    ax.set_xlabel("Log10(Mass)")
+    ax.set_ylabel("Frequency")
+
+    st.pyplot(fig)
+
+    # =====================================================
+    # 2. YEAR TREND
+    # =====================================================
+    st.subheader("Meteorite Count Over Years")
+
+    yearly = df_eda.groupby("year").size()
+
+    fig, ax = plt.subplots()
+    ax.plot(yearly.index, yearly.values)
+
+    st.pyplot(fig)
+
+    # =====================================================
+    # 3. MASS VS YEAR
+    # =====================================================
     st.subheader("Mass vs Year")
-    fig3, ax3 = plt.subplots()
-    ax3.scatter(df["year"], np.log1p(df["mass_tonnes"]), alpha=0.5)
-    st.pyplot(fig3)
 
-    # ---------------- HEATMAP ----------------
-    st.subheader("Correlation Heatmap")
+    sample_df = df_eda.sample(min(5000, len(df_eda)))
 
-    df_heat = df.copy()
-    df_heat["class_code"] = df["class"].astype("category").cat.codes
-    df_heat["country_code"] = df["country"].astype("category").cat.codes
+    fig, ax = plt.subplots()
 
-    corr = df_heat[["year", "mass_tonnes", "class_code", "country_code"]].corr()
-
-    fig4, ax4 = plt.subplots()
-    cax = ax4.imshow(corr, cmap="coolwarm")
-    fig4.colorbar(cax)
-
-    ax4.set_xticks(range(len(corr.columns)))
-    ax4.set_yticks(range(len(corr.columns)))
-    ax4.set_xticklabels(corr.columns, rotation=45)
-    ax4.set_yticklabels(corr.columns)
-
-    st.pyplot(fig4)
-
-    # ---------------- BUBBLE ----------------
-    st.subheader("Bubble Chart")
-
-    bubble = df.groupby("year").agg({
-        "mass_tonnes": "mean",
-        "name": "count"
-    }).reset_index()
-
-    fig5, ax5 = plt.subplots()
-    ax5.scatter(
-        bubble["year"],
-        bubble["mass_tonnes"],
-        s=bubble["name"] * 20,
-        alpha=0.6
+    ax.scatter(
+        sample_df["year"],
+        np.log10(sample_df["mass_tonnes"] + 1e-9),
+        alpha=0.4
     )
-    st.pyplot(fig5)
 
-    # ---------------- BULLET (FIXED) ----------------
-    st.subheader("Bullet Chart")
+    st.pyplot(fig)
 
-    avg_mass = df["mass_tonnes"].mean()
-    max_mass = df["mass_tonnes"].max()
+    # =====================================================
+    # 4. TOP CLASSES
+    # =====================================================
+    st.subheader("Top Meteorite Classes")
 
-    fig6, ax6 = plt.subplots(figsize=(6,2))
-    ax6.barh(["Mass"], [max_mass], color="lightgray")
-    ax6.barh(["Mass"], [avg_mass], color="steelblue")
-    ax6.set_xlim(0, max_mass * 1.1)
+    fig, ax = plt.subplots()
+    df_eda["class"].value_counts().head(10).plot(kind="bar", ax=ax)
 
-    st.pyplot(fig6)
+    st.pyplot(fig)
 
-    # ---------------- MICRO TREND (FIXED) ----------------
-    st.subheader("Micro Trend (Top Regions)")
+    # =====================================================
+    # 5. MEDIAN MASS BY CLASS
+    # =====================================================
+    st.subheader("Median Mass by Class")
 
-    top_regions = df["region"].dropna().value_counts().head(5).index
+    class_mass = (
+        df_eda.groupby("class")["mass_tonnes"]
+        .median()
+        .sort_values(ascending=False)
+        .head(10)
+    )
 
-    fig7, ax7 = plt.subplots()
+    fig, ax = plt.subplots()
+    class_mass.plot(kind="bar", ax=ax)
 
-    plotted = False
+    st.pyplot(fig)
 
-    for region in top_regions:
-        sub = df[df["region"] == region]
+    # =====================================================
+    # 6. MAP (FIXED)
+    # =====================================================
+    st.subheader("Meteorite Locations")
 
-        if sub["year"].nunique() < 2:
-            continue
+    map_df = df_eda.dropna(subset=["lat", "lon"])
 
-        trend = sub.groupby("year").size().sort_index()
-        trend = trend.rolling(2, min_periods=1).mean()
+    if len(map_df) > 0:
+        st.map(map_df.rename(columns={
+            "lat": "latitude",
+            "lon": "longitude"
+        }))
+    else:
+        st.warning("No location data available")
 
-        ax7.plot(trend.index, trend.values, label=region)
-        plotted = True
-
-    if plotted:
-        ax7.legend()
-
-    st.pyplot(fig7)
-
+  
+# =====================================================
+# 🤖 ML PREDICTION
+# =====================================================
 # =====================================================
 # 🤖 ML PREDICTION
 # =====================================================
 elif menu == "🤖 Prediction (ML)":
 
-    st.header("Meteorite Mass Prediction")
+    st.header("Meteorite Class Prediction")
 
     try:
-        model = joblib.load(os.path.join(BASE_DIR, "backend", "models", "mass_model.pkl"))
-        encoders = joblib.load(os.path.join(BASE_DIR, "backend", "models", "encoders.pkl"))
+        @st.cache_resource
+        def load_model():
+            return joblib.load(os.path.join(BASE_DIR, "backend", "models", "class_model.pkl"))
 
-        year = st.number_input("Year", 1800, 2100, 2000)
-        country = st.text_input("Country", "India")
-        region = st.text_input("Region", "Unknown")
-        meteorite_class = st.text_input("Class", "H5")
+        model = load_model()
 
-        def safe_encode(col, val):
-            if val in encoders[col].classes_:
-                return encoders[col].transform([val])[0]
-            return -1
+        year = st.number_input("Year", 1800, 2025, 2000)
+        mass = st.number_input("Mass (tonnes)", 0.000001, 10.0, 0.01)
+        lat = st.number_input("Latitude", -90.0, 90.0, 20.0)
+        lon = st.number_input("Longitude", -180.0, 180.0, 70.0)
 
-        if st.button("Predict Mass"):
+        if st.button("Predict Class"):
 
-            X_input = np.array([[
-                year,
-                safe_encode("country", country),
-                safe_encode("region", region),
-                safe_encode("class", meteorite_class)
-            ]])
+            input_df = pd.DataFrame([{
+                "year": year,
+                "mass_tonnes": mass,
+                "lat": lat,
+                "lon": lon
+            }])
 
-            pred = model.predict(X_input)[0]
-            pred = max(pred, 0)
+            # 🔥 Probability-based prediction
+            probs = model.predict_proba(input_df)[0]
+            classes = model.classes_
 
-            st.success(f"Predicted Mass: {pred:.4f} tonnes")
+            top_idx = probs.argmax()
 
+            st.success(f"Predicted Class: {classes[top_idx]}")
+            st.write(f"Confidence: {probs[top_idx]*100:.2f}%")
+
+            # 🔥 Top 3 predictions (very useful)
+            st.subheader("Top 3 Possible Classes")
+
+            top_3_idx = probs.argsort()[-3:][::-1]
+
+            for i in top_3_idx:
+                st.write(f"{classes[i]} → {probs[i]*100:.2f}%")
+            avg_mass = df[df["class"] == classes[top_idx]]["mass_tonnes"].mean()
+            st.write(f"Average mass for {classes[top_idx]}: {avg_mass:.4f} tonnes")
+            st.bar_chart(pd.DataFrame({
+    "Class": classes[top_3_idx],
+    "Probability": probs[top_3_idx]
+}).set_index("Class"))
     except Exception as e:
         st.error(f"Model error: {e}")
-
+        
 # =====================================================
 # 📈 ARIMA
 # =====================================================
